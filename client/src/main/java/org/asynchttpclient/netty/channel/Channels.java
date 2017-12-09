@@ -43,7 +43,7 @@ public class Channels {
         setAttribute(channel, DiscardEvent.DISCARD);
     }
 
-    public static boolean isChannelActive(Channel channel) {
+    public static boolean isChannelValid(Channel channel) {
         return channel != null && channel.isActive();
     }
     

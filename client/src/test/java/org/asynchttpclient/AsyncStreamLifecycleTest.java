@@ -17,6 +17,7 @@ package org.asynchttpclient;
 
 import static org.asynchttpclient.Dsl.asyncHttpClient;
 import static org.testng.Assert.*;
+import io.netty.handler.codec.http.HttpHeaders;
 
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -28,17 +29,16 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import javax.servlet.AsyncContext;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
+import org.eclipse.jetty.continuation.Continuation;
+import org.eclipse.jetty.continuation.ContinuationSupport;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.handler.AbstractHandler;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.Test;
-
-import io.netty.handler.codec.http.HttpHeaders;
 
 /**
  * Tests default asynchronous life cycle.
@@ -61,7 +61,8 @@ public class AsyncStreamLifecycleTest extends AbstractBasicTest {
             public void handle(String s, Request request, HttpServletRequest req, final HttpServletResponse resp) throws IOException, ServletException {
                 resp.setContentType("text/plain;charset=utf-8");
                 resp.setStatus(200);
-                final AsyncContext asyncContext = request.startAsync();
+                final Continuation continuation = ContinuationSupport.getContinuation(req);
+                continuation.suspend();
                 final PrintWriter writer = resp.getWriter();
                 executorService.submit(new Runnable() {
                     public void run() {
@@ -85,7 +86,7 @@ public class AsyncStreamLifecycleTest extends AbstractBasicTest {
                         logger.info("Delivering part2.");
                         writer.write("part2");
                         writer.flush();
-                        asyncContext.complete();
+                        continuation.complete();
                     }
                 });
                 request.setHandled(true);

@@ -13,37 +13,39 @@
  */
 package org.asynchttpclient.resolver;
 
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.util.ArrayList;
-import java.util.List;
-
-import org.asynchttpclient.AsyncHandler;
-import org.asynchttpclient.netty.SimpleFutureListener;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import io.netty.resolver.NameResolver;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.ImmediateEventExecutor;
 import io.netty.util.concurrent.Promise;
 
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.util.ArrayList;
+import java.util.List;
+
+import org.asynchttpclient.handler.AsyncHandlerExtensions;
+import org.asynchttpclient.netty.SimpleFutureListener;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 public enum RequestHostnameResolver {
 
     INSTANCE;
 
-    public Future<List<InetSocketAddress>> resolve(NameResolver<InetAddress> nameResolver, InetSocketAddress unresolvedAddress, AsyncHandler<?> asyncHandler) {
+    public Future<List<InetSocketAddress>> resolve(NameResolver<InetAddress> nameResolver, InetSocketAddress unresolvedAddress, AsyncHandlerExtensions asyncHandlerExtensions) {
 
         final String hostname = unresolvedAddress.getHostName();
         final int port = unresolvedAddress.getPort();
         final Promise<List<InetSocketAddress>> promise = ImmediateEventExecutor.INSTANCE.newPromise();
 
-        try {
-            asyncHandler.onHostnameResolutionAttempt(hostname);
-        } catch (Exception e) {
-            LOGGER.error("onHostnameResolutionAttempt crashed", e);
-            promise.tryFailure(e);
-            return promise;
+        if (asyncHandlerExtensions != null) {
+            try {
+                asyncHandlerExtensions.onHostnameResolutionAttempt(hostname);
+            } catch (Exception e) {
+                LOGGER.error("onHostnameResolutionAttempt crashed", e);
+                promise.tryFailure(e);
+                return promise;
+            }
         }
 
         final Future<List<InetAddress>> whenResolved = nameResolver.resolveAll(hostname);
@@ -56,24 +58,28 @@ public enum RequestHostnameResolver {
                 for (InetAddress a : value) {
                     socketAddresses.add(new InetSocketAddress(a, port));
                 }
-                try {
-                    asyncHandler.onHostnameResolutionSuccess(hostname, socketAddresses);
-                } catch (Exception e) {
-                    LOGGER.error("onHostnameResolutionSuccess crashed", e);
-                    promise.tryFailure(e);
-                    return;
+                if (asyncHandlerExtensions != null) {
+                    try {
+                        asyncHandlerExtensions.onHostnameResolutionSuccess(hostname, socketAddresses);
+                    } catch (Exception e) {
+                        LOGGER.error("onHostnameResolutionSuccess crashed", e);
+                        promise.tryFailure(e);
+                        return;
+                    }
                 }
                 promise.trySuccess(socketAddresses);
             }
 
             @Override
             protected void onFailure(Throwable t) throws Exception {
-                try {
-                    asyncHandler.onHostnameResolutionFailure(hostname, t);
-                } catch (Exception e) {
-                    LOGGER.error("onHostnameResolutionFailure crashed", e);
-                    promise.tryFailure(e);
-                    return;
+                if (asyncHandlerExtensions != null) {
+                    try {
+                        asyncHandlerExtensions.onHostnameResolutionFailure(hostname, t);
+                    } catch (Exception e) {
+                        LOGGER.error("onHostnameResolutionFailure crashed", e);
+                        promise.tryFailure(e);
+                        return;
+                    }
                 }
                 promise.tryFailure(t);
             }

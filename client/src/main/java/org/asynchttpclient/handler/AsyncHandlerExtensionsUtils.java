@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2014 Sonatype, Inc. All rights reserved.
+ * Copyright (c) 2015 AsyncHttpClient Project. All rights reserved.
  *
  * This program is licensed to you under the Apache License Version 2.0,
  * and you may not use this file except in compliance with the Apache License Version 2.0.
@@ -10,14 +10,16 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the Apache License Version 2.0 for the specific language governing permissions and limitations there under.
  */
-package org.asynchttpclient.extras.registry;
+package org.asynchttpclient.handler;
 
-import org.asynchttpclient.extras.registry.AsyncHttpClientImplException;
+import org.asynchttpclient.AsyncHandler;
 
-@SuppressWarnings("serial")
-public class BadAsyncHttpClientException extends AsyncHttpClientImplException {
+public final class AsyncHandlerExtensionsUtils {
 
-    public BadAsyncHttpClientException(String msg) {
-        super(msg);
+    public static AsyncHandlerExtensions toAsyncHandlerExtensions(AsyncHandler<?> asyncHandler) {
+        return asyncHandler instanceof AsyncHandlerExtensions ? (AsyncHandlerExtensions) asyncHandler : null;
+    }
+
+    private AsyncHandlerExtensionsUtils() {
     }
 }

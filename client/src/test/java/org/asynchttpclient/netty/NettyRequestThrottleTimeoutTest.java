@@ -24,7 +24,6 @@ import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
-import javax.servlet.AsyncContext;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
@@ -33,6 +32,8 @@ import org.asynchttpclient.AbstractBasicTest;
 import org.asynchttpclient.AsyncCompletionHandler;
 import org.asynchttpclient.AsyncHttpClient;
 import org.asynchttpclient.Response;
+import org.eclipse.jetty.continuation.Continuation;
+import org.eclipse.jetty.continuation.ContinuationSupport;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.handler.AbstractHandler;
 import org.testng.annotations.Test;
@@ -50,14 +51,15 @@ public class NettyRequestThrottleTimeoutTest extends AbstractBasicTest {
         public void handle(String target, Request baseRequest, HttpServletRequest request, final HttpServletResponse response)
                 throws IOException, ServletException {
             response.setStatus(HttpServletResponse.SC_OK);
-            final AsyncContext asyncContext = request.startAsync();
+            final Continuation continuation = ContinuationSupport.getContinuation(request);
+            continuation.suspend();
             new Thread(new Runnable() {
                 public void run() {
                     try {
                         Thread.sleep(SLEEPTIME_MS);
                         response.getOutputStream().print(MSG);
                         response.getOutputStream().flush();
-                        asyncContext.complete();
+                        continuation.complete();
                     } catch (InterruptedException e) {
                         logger.error(e.getMessage(), e);
                     } catch (IOException e) {

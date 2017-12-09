@@ -17,7 +17,7 @@ import static io.netty.handler.codec.http.HttpHeaderNames.*;
 import static org.asynchttpclient.util.AuthenticatorUtils.*;
 import static org.asynchttpclient.util.HttpUtils.*;
 import static org.asynchttpclient.util.MiscUtils.*;
-import static org.asynchttpclient.ws.WebSocketUtils.getWebSocketKey;
+import static org.asynchttpclient.ws.WebSocketUtils.getKey;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
@@ -123,10 +123,10 @@ public final class NettyRequestFactory {
             headers.set(PROXY_AUTHORIZATION, proxyAuthorizationHeader);
     }
 
-    public NettyRequest newNettyRequest(Request request, boolean performConnectRequest, ProxyServer proxyServer, Realm realm, Realm proxyRealm) {
+    public NettyRequest newNettyRequest(Request request, boolean forceConnect, ProxyServer proxyServer, Realm realm, Realm proxyRealm) {
 
         Uri uri = request.getUri();
-        HttpMethod method = performConnectRequest ? HttpMethod.CONNECT : HttpMethod.valueOf(request.getMethod());
+        HttpMethod method = forceConnect ? HttpMethod.CONNECT : HttpMethod.valueOf(request.getMethod());
         boolean connect = method == HttpMethod.CONNECT;
 
         HttpVersion httpVersion = HttpVersion.HTTP_1_1;
@@ -194,7 +194,7 @@ public final class NettyRequestFactory {
         if (!connect && uri.isWebSocket()) {
             headers.set(UPGRADE, HttpHeaderValues.WEBSOCKET)//
                     .set(CONNECTION, HttpHeaderValues.UPGRADE)//
-                    .set(SEC_WEBSOCKET_KEY, getWebSocketKey())//
+                    .set(SEC_WEBSOCKET_KEY, getKey())//
                     .set(SEC_WEBSOCKET_VERSION, "13");
 
             if (!headers.contains(ORIGIN)) {

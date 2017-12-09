@@ -15,6 +15,7 @@ package org.asynchttpclient.netty.request;
 
 import static io.netty.handler.codec.http.HttpHeaderNames.EXPECT;
 import static java.util.Collections.singletonList;
+import static org.asynchttpclient.handler.AsyncHandlerExtensionsUtils.toAsyncHandlerExtensions;
 import static org.asynchttpclient.util.Assertions.assertNotNull;
 import static org.asynchttpclient.util.AuthenticatorUtils.*;
 import static org.asynchttpclient.util.HttpConstants.Methods.*;
@@ -52,6 +53,7 @@ import org.asynchttpclient.exception.RemotelyClosedException;
 import org.asynchttpclient.filter.FilterContext;
 import org.asynchttpclient.filter.FilterException;
 import org.asynchttpclient.filter.IOExceptionFilter;
+import org.asynchttpclient.handler.AsyncHandlerExtensions;
 import org.asynchttpclient.handler.TransferCompletionHandler;
 import org.asynchttpclient.netty.NettyResponseFuture;
 import org.asynchttpclient.netty.OnLastHttpContentCallback;
@@ -80,47 +82,42 @@ public final class NettyRequestSender {
     private final AsyncHttpClientState clientState;
     private final NettyRequestFactory requestFactory;
 
-    public NettyRequestSender(AsyncHttpClientConfig config, //
-            ChannelManager channelManager, //
-            Timer nettyTimer, //
+    public NettyRequestSender(AsyncHttpClientConfig config,//
+            ChannelManager channelManager,//
+            ConnectionSemaphore connectionSemaphore,//
+            Timer nettyTimer,//
             AsyncHttpClientState clientState) {
         this.config = config;
         this.channelManager = channelManager;
-        this.connectionSemaphore = ConnectionSemaphore.newConnectionSemaphore(config);
+        this.connectionSemaphore = connectionSemaphore;
         this.nettyTimer = nettyTimer;
         this.clientState = clientState;
         requestFactory = new NettyRequestFactory(config);
     }
 
-    public <T> ListenableFuture<T> sendRequest(final Request request, //
-            final AsyncHandler<T> asyncHandler, //
-            NettyResponseFuture<T> future, //
+    public <T> ListenableFuture<T> sendRequest(final Request request,//
+            final AsyncHandler<T> asyncHandler,//
+            NettyResponseFuture<T> future,//
             boolean performingNextRequest) {
 
-        if (isClosed()) {
+        if (isClosed())
             throw new IllegalStateException("Closed");
-        }
 
         validateWebSocketRequest(request, asyncHandler);
 
         ProxyServer proxyServer = getProxyServer(config, request);
 
-        // WebSockets use connect tunneling to work with proxies
-        if (proxyServer != null && (request.getUri().isSecured() || request.getUri().isWebSocket())
-                && !isConnectDone(request, future)) {
-            // Proxy with HTTPS or WebSocket: CONNECT for sure
-            if (future != null && future.isConnectAllowed()) {
-                // Perform CONNECT
-                return sendRequestWithCertainForceConnect(request, asyncHandler, future, proxyServer, true);
-            } else {
-                // CONNECT will depend if we can pool or connection or if we have to open a new
-                // one
-                return sendRequestThroughSslProxy(request, asyncHandler, future, proxyServer);
-            }
-        } else {
+        // websockets use connect tunnelling to work with proxies
+        if (proxyServer != null && (request.getUri().isSecured() || request.getUri().isWebSocket()) && !isConnectDone(request, future))
+            if (future != null && future.isConnectAllowed())
+                // SSL proxy or websocket: CONNECT for sure
+                return sendRequestWithCertainForceConnect(request, asyncHandler, future, performingNextRequest, proxyServer, true);
+            else
+                // CONNECT will depend if we can pool or connection or if we have to open a new one
+                return sendRequestThroughSslProxy(request, asyncHandler, future, performingNextRequest, proxyServer);
+        else
             // no CONNECT for sure
-            return sendRequestWithCertainForceConnect(request, asyncHandler, future, proxyServer, false);
-        }
+            return sendRequestWithCertainForceConnect(request, asyncHandler, future, performingNextRequest, proxyServer, false);
     }
 
     private boolean isConnectDone(Request request, NettyResponseFuture<?> future) {
@@ -131,66 +128,60 @@ public final class NettyRequestSender {
     }
 
     /**
-     * We know for sure if we have to force to connect or not, so we can build the
-     * HttpRequest right away This reduces the probability of having a pooled
-     * channel closed by the server by the time we build the request
+     * We know for sure if we have to force to connect or not, so we can build the HttpRequest right away This reduces the probability of having a pooled channel closed by the
+     * server by the time we build the request
      */
     private <T> ListenableFuture<T> sendRequestWithCertainForceConnect(//
-            Request request, //
-            AsyncHandler<T> asyncHandler, //
-            NettyResponseFuture<T> future, //
-            ProxyServer proxyServer, //
-            boolean performConnectRequest) {
+            Request request,//
+            AsyncHandler<T> asyncHandler,//
+            NettyResponseFuture<T> future,//
+            boolean performingNextRequest,//
+            ProxyServer proxyServer,//
+            boolean forceConnect) {
 
-        NettyResponseFuture<T> newFuture = newNettyRequestAndResponseFuture(request, asyncHandler, future, proxyServer,
-                performConnectRequest);
+        NettyResponseFuture<T> newFuture = newNettyRequestAndResponseFuture(request, asyncHandler, future, proxyServer, forceConnect);
 
         Channel channel = getOpenChannel(future, request, proxyServer, asyncHandler);
 
-        return Channels.isChannelActive(channel)
-                ? sendRequestWithOpenChannel(request, proxyServer, newFuture, asyncHandler, channel)
-                : sendRequestWithNewChannel(request, proxyServer, newFuture, asyncHandler);
+        if (Channels.isChannelValid(channel))
+            return sendRequestWithOpenChannel(request, proxyServer, newFuture, asyncHandler, channel);
+        else
+            return sendRequestWithNewChannel(request, proxyServer, newFuture, asyncHandler, performingNextRequest);
     }
 
     /**
-     * Using CONNECT depends on wither we can fetch a valid channel or not Loop
-     * until we get a valid channel from the pool and it's still valid once the
-     * request is built @
+     * Using CONNECT depends on wither we can fetch a valid channel or not Loop until we get a valid channel from the pool and it's still valid once the request is built @
      */
+    @SuppressWarnings("unused")
     private <T> ListenableFuture<T> sendRequestThroughSslProxy(//
-            Request request, //
-            AsyncHandler<T> asyncHandler, //
-            NettyResponseFuture<T> future, //
+            Request request,//
+            AsyncHandler<T> asyncHandler,//
+            NettyResponseFuture<T> future,//
+            boolean performingNextRequest,//
             ProxyServer proxyServer) {
 
         NettyResponseFuture<T> newFuture = null;
         for (int i = 0; i < 3; i++) {
             Channel channel = getOpenChannel(future, request, proxyServer, asyncHandler);
+            if (Channels.isChannelValid(channel))
+                if (newFuture == null)
+                    newFuture = newNettyRequestAndResponseFuture(request, asyncHandler, future, proxyServer, false);
 
-            if (channel == null) {
+            if (Channels.isChannelValid(channel))
+                // if the channel is still active, we can use it, otherwise try
+                // gain
+                return sendRequestWithOpenChannel(request, proxyServer, newFuture, asyncHandler, channel);
+            else
                 // pool is empty
                 break;
-            }
-
-            if (newFuture == null) {
-                newFuture = newNettyRequestAndResponseFuture(request, asyncHandler, future, proxyServer, false);
-            }
-
-            if (Channels.isChannelActive(channel)) {
-                // if the channel is still active, we can use it,
-                // otherwise, channel was closed by the time we computed the request, try again
-                return sendRequestWithOpenChannel(request, proxyServer, newFuture, asyncHandler, channel);
-            }
         }
 
-        // couldn't poll an active channel
         newFuture = newNettyRequestAndResponseFuture(request, asyncHandler, future, proxyServer, true);
-        return sendRequestWithNewChannel(request, proxyServer, newFuture, asyncHandler);
+        return sendRequestWithNewChannel(request, proxyServer, newFuture, asyncHandler, performingNextRequest);
     }
 
-    private <T> NettyResponseFuture<T> newNettyRequestAndResponseFuture(final Request request,
-            final AsyncHandler<T> asyncHandler, NettyResponseFuture<T> originalFuture, ProxyServer proxy,
-            boolean performConnectRequest) {
+    private <T> NettyResponseFuture<T> newNettyRequestAndResponseFuture(final Request request, final AsyncHandler<T> asyncHandler, NettyResponseFuture<T> originalFuture,
+            ProxyServer proxy, boolean forceConnect) {
 
         Realm realm = null;
         if (originalFuture != null) {
@@ -209,8 +200,7 @@ public final class NettyRequestSender {
             proxyRealm = proxy.getRealm();
         }
 
-        NettyRequest nettyRequest = requestFactory.newNettyRequest(request, performConnectRequest, proxy, realm,
-                proxyRealm);
+        NettyRequest nettyRequest = requestFactory.newNettyRequest(request, forceConnect, proxy, realm, proxyRealm);
 
         if (originalFuture == null) {
             NettyResponseFuture<T> future = newNettyResponseFuture(request, asyncHandler, nettyRequest, proxy);
@@ -224,24 +214,25 @@ public final class NettyRequestSender {
         }
     }
 
-    private Channel getOpenChannel(NettyResponseFuture<?> future, Request request, ProxyServer proxyServer,
-            AsyncHandler<?> asyncHandler) {
-        if (future != null && future.isReuseChannel() && Channels.isChannelActive(future.channel())) {
+    private Channel getOpenChannel(NettyResponseFuture<?> future, Request request, ProxyServer proxyServer, AsyncHandler<?> asyncHandler) {
+        if (future != null && future.isReuseChannel() && Channels.isChannelValid(future.channel())) {
             return future.channel();
         } else {
             return pollPooledChannel(request, proxyServer, asyncHandler);
         }
     }
 
-    private <T> ListenableFuture<T> sendRequestWithOpenChannel(Request request, ProxyServer proxy,
-            NettyResponseFuture<T> future, AsyncHandler<T> asyncHandler, Channel channel) {
+    private <T> ListenableFuture<T> sendRequestWithOpenChannel(Request request, ProxyServer proxy, NettyResponseFuture<T> future, AsyncHandler<T> asyncHandler, Channel channel) {
 
-        try {
-            asyncHandler.onConnectionPooled(channel);
-        } catch (Exception e) {
-            LOGGER.error("onConnectionPooled crashed", e);
-            abort(channel, future, e);
-            return future;
+        final AsyncHandlerExtensions asyncHandlerExtensions = toAsyncHandlerExtensions(asyncHandler);
+        if (asyncHandlerExtensions != null) {
+            try {
+                asyncHandlerExtensions.onConnectionPooled(channel);
+            } catch (Exception e) {
+                LOGGER.error("onConnectionPooled crashed", e);
+                abort(channel, future, e);
+                return future;
+            }
         }
 
         SocketAddress channelRemoteAddress = channel.remoteAddress();
@@ -259,11 +250,10 @@ public final class NettyRequestSender {
         }
 
         // channelInactive might be called between isChannelValid and writeRequest
-        // so if we don't store the Future now, channelInactive won't perform
-        // handleUnexpectedClosedChannel
+        // so if we don't store the Future now, channelInactive won't perform handleUnexpectedClosedChannel
         Channels.setAttribute(channel, future);
 
-        if (Channels.isChannelActive(channel)) {
+        if (Channels.isChannelValid(channel)) {
             writeRequest(future, channel);
         } else {
             // bad luck, the channel was closed in-between
@@ -276,10 +266,11 @@ public final class NettyRequestSender {
     }
 
     private <T> ListenableFuture<T> sendRequestWithNewChannel(//
-            Request request, //
-            ProxyServer proxy, //
-            NettyResponseFuture<T> future, //
-            AsyncHandler<T> asyncHandler) {
+            Request request,//
+            ProxyServer proxy,//
+            NettyResponseFuture<T> future,//
+            AsyncHandler<T> asyncHandler,//
+            boolean performingNextRequest) {
 
         // some headers are only set when performing the first request
         HttpHeaders headers = future.getNettyRequest().getHttpRequest().headers();
@@ -289,8 +280,7 @@ public final class NettyRequestSender {
         requestFactory.setProxyAuthorizationHeader(headers, perConnectionProxyAuthorizationHeader(request, proxyRealm));
 
         future.setInAuth(realm != null && realm.isUsePreemptiveAuth() && realm.getScheme() != AuthScheme.NTLM);
-        future.setInProxyAuth(
-                proxyRealm != null && proxyRealm.isUsePreemptiveAuth() && proxyRealm.getScheme() != AuthScheme.NTLM);
+        future.setInProxyAuth(proxyRealm != null && proxyRealm.isUsePreemptiveAuth() && proxyRealm.getScheme() != AuthScheme.NTLM);
 
         // Do not throw an exception when we need an extra connection for a redirect
         // FIXME why? This violate the max connection per host handling, right?
@@ -317,10 +307,8 @@ public final class NettyRequestSender {
 
                     @Override
                     protected void onSuccess(List<InetSocketAddress> addresses) {
-                        NettyConnectListener<T> connectListener = new NettyConnectListener<>(future,
-                                NettyRequestSender.this, channelManager, connectionSemaphore, partitionKey);
-                        NettyChannelConnector connector = new NettyChannelConnector(request.getLocalAddress(),
-                                addresses, asyncHandler, clientState, config);
+                        NettyConnectListener<T> connectListener = new NettyConnectListener<>(future, NettyRequestSender.this, channelManager, connectionSemaphore, partitionKey);
+                        NettyChannelConnector connector = new NettyChannelConnector(request.getLocalAddress(), addresses, asyncHandler, clientState, config);
                         if (!future.isDone()) {
                             connector.connect(bootstrap, connectListener);
                         }
@@ -334,12 +322,13 @@ public final class NettyRequestSender {
 
         return future;
     }
-
-    private <T> Future<List<InetSocketAddress>> resolveAddresses(Request request, //
-            ProxyServer proxy, //
-            NettyResponseFuture<T> future, //
+    
+    private <T> Future<List<InetSocketAddress>> resolveAddresses(
+            Request request,//
+            ProxyServer proxy,//
+            NettyResponseFuture<T> future,//
             AsyncHandler<T> asyncHandler) {
-
+        
         Uri uri = request.getUri();
         final Promise<List<InetSocketAddress>> promise = ImmediateEventExecutor.INSTANCE.newPromise();
 
@@ -347,34 +336,33 @@ public final class NettyRequestSender {
             int port = uri.isSecured() ? proxy.getSecuredPort() : proxy.getPort();
             InetSocketAddress unresolvedRemoteAddress = InetSocketAddress.createUnresolved(proxy.getHost(), port);
             scheduleRequestTimeout(future, unresolvedRemoteAddress);
-            return RequestHostnameResolver.INSTANCE.resolve(request.getNameResolver(), unresolvedRemoteAddress, asyncHandler);
-
+            return RequestHostnameResolver.INSTANCE.resolve(request.getNameResolver(), unresolvedRemoteAddress, toAsyncHandlerExtensions(asyncHandler));
+            
         } else {
             int port = uri.getExplicitPort();
-
+            
             if (request.getAddress() != null) {
                 // bypass resolution
                 InetSocketAddress inetSocketAddress = new InetSocketAddress(request.getAddress(), port);
                 return promise.setSuccess(singletonList(inetSocketAddress));
-
+                
             } else {
                 InetSocketAddress unresolvedRemoteAddress = InetSocketAddress.createUnresolved(uri.getHost(), port);
                 scheduleRequestTimeout(future, unresolvedRemoteAddress);
-                return RequestHostnameResolver.INSTANCE.resolve(request.getNameResolver(), unresolvedRemoteAddress, asyncHandler);
+                return RequestHostnameResolver.INSTANCE.resolve(request.getNameResolver(), unresolvedRemoteAddress, toAsyncHandlerExtensions(asyncHandler));
             }
         }
     }
 
-    private <T> NettyResponseFuture<T> newNettyResponseFuture(Request request, AsyncHandler<T> asyncHandler,
-            NettyRequest nettyRequest, ProxyServer proxyServer) {
+    private <T> NettyResponseFuture<T> newNettyResponseFuture(Request request, AsyncHandler<T> asyncHandler, NettyRequest nettyRequest, ProxyServer proxyServer) {
 
         NettyResponseFuture<T> future = new NettyResponseFuture<>(//
-                request, //
-                asyncHandler, //
-                nettyRequest, //
-                config.getMaxRequestRetry(), //
-                request.getChannelPoolPartitioning(), //
-                connectionSemaphore, //
+                request,//
+                asyncHandler,//
+                nettyRequest,//
+                config.getMaxRequestRetry(),//
+                request.getChannelPoolPartitioning(),//
+                connectionSemaphore,//
                 proxyServer);
 
         String expectHeader = request.getHeaders().get(EXPECT);
@@ -387,29 +375,30 @@ public final class NettyRequestSender {
 
         NettyRequest nettyRequest = future.getNettyRequest();
         HttpRequest httpRequest = nettyRequest.getHttpRequest();
-        AsyncHandler<T> asyncHandler = future.getAsyncHandler();
+        AsyncHandler<T> handler = future.getAsyncHandler();
 
-        // if the channel is dead because it was pooled and the remote server decided to
-        // close it,
+        // if the channel is dead because it was pooled and the remote server decided to close it,
         // we just let it go and the channelInactive do its work
-        if (!Channels.isChannelActive(channel))
+        if (!Channels.isChannelValid(channel))
             return;
 
         try {
-            if (asyncHandler instanceof TransferCompletionHandler) {
-                configureTransferAdapter(asyncHandler, httpRequest);
+            if (handler instanceof TransferCompletionHandler) {
+                configureTransferAdapter(handler, httpRequest);
             }
 
-            boolean writeBody = !future.isDontWriteBodyBecauseExpectContinue()
-                    && httpRequest.method() != HttpMethod.CONNECT && nettyRequest.getBody() != null;
+            boolean writeBody = !future.isDontWriteBodyBecauseExpectContinue() && httpRequest.method() != HttpMethod.CONNECT && nettyRequest.getBody() != null;
 
             if (!future.isHeadersAlreadyWrittenOnContinue()) {
-                try {
-                    asyncHandler.onRequestSend(nettyRequest);
-                } catch (Exception e) {
-                    LOGGER.error("onRequestSend crashed", e);
-                    abort(channel, future, e);
-                    return;
+                final AsyncHandlerExtensions asyncHandlerExtensions = toAsyncHandlerExtensions(handler);
+                if (asyncHandlerExtensions != null) {
+                    try {
+                        asyncHandlerExtensions.onRequestSend(nettyRequest);
+                    } catch (Exception e) {
+                        LOGGER.error("onRequestSend crashed", e);
+                        abort(channel, future, e);
+                        return;
+                    }
                 }
 
                 // if the request has a body, we want to track progress
@@ -430,7 +419,7 @@ public final class NettyRequestSender {
                 nettyRequest.getBody().write(channel, future);
 
             // don't bother scheduling read timeout if channel became invalid
-            if (Channels.isChannelActive(channel)) {
+            if (Channels.isChannelValid(channel)) {
                 scheduleReadTimeout(future);
             }
 
@@ -445,19 +434,16 @@ public final class NettyRequestSender {
         TransferCompletionHandler.class.cast(handler).headers(h);
     }
 
-    private void scheduleRequestTimeout(NettyResponseFuture<?> nettyResponseFuture,
-            InetSocketAddress originalRemoteAddress) {
+    private void scheduleRequestTimeout(NettyResponseFuture<?> nettyResponseFuture, InetSocketAddress originalRemoteAddress) {
         nettyResponseFuture.touch();
-        TimeoutsHolder timeoutsHolder = new TimeoutsHolder(nettyTimer, nettyResponseFuture, this, config,
-                originalRemoteAddress);
+        TimeoutsHolder timeoutsHolder = new TimeoutsHolder(nettyTimer, nettyResponseFuture, this, config, originalRemoteAddress);
         nettyResponseFuture.setTimeoutsHolder(timeoutsHolder);
     }
 
     private void scheduleReadTimeout(NettyResponseFuture<?> nettyResponseFuture) {
         TimeoutsHolder timeoutsHolder = nettyResponseFuture.getTimeoutsHolder();
         if (timeoutsHolder != null) {
-            // on very fast requests, it's entirely possible that the response has already
-            // been completed
+            // on very fast requests, it's entirely possible that the response has already been completed
             // by the time we try to schedule the read timeout
             nettyResponseFuture.touch();
             timeoutsHolder.startReadTimeout();
@@ -485,8 +471,7 @@ public final class NettyRequestSender {
             } else if (future.incrementRetryAndCheck() && retry(future)) {
                 future.pendingException = null;
             } else {
-                abort(channel, future,
-                        future.pendingException != null ? future.pendingException : RemotelyClosedException.INSTANCE);
+                abort(channel, future, future.pendingException != null ? future.pendingException : RemotelyClosedException.INSTANCE);
             }
         }
     }
@@ -501,12 +486,15 @@ public final class NettyRequestSender {
             future.setChannelState(ChannelState.RECONNECTED);
 
             LOGGER.debug("Trying to recover request {}\n", future.getNettyRequest().getHttpRequest());
-            try {
-                future.getAsyncHandler().onRetry();
-            } catch (Exception e) {
-                LOGGER.error("onRetry crashed", e);
-                abort(future.channel(), future, e);
-                return false;
+            final AsyncHandlerExtensions asyncHandlerExtensions = toAsyncHandlerExtensions(future.getAsyncHandler());
+            if (asyncHandlerExtensions != null) {
+                try {
+                    asyncHandlerExtensions.onRetry();
+                } catch (Exception e) {
+                    LOGGER.error("onRetry crashed", e);
+                    abort(future.channel(), future, e);
+                    return false;
+                }
             }
 
             try {
@@ -523,14 +511,12 @@ public final class NettyRequestSender {
         }
     }
 
-    public boolean applyIoExceptionFiltersAndReplayRequest(NettyResponseFuture<?> future, IOException e,
-            Channel channel) {
+    public boolean applyIoExceptionFiltersAndReplayRequest(NettyResponseFuture<?> future, IOException e, Channel channel) {
 
         boolean replayed = false;
 
         @SuppressWarnings({ "unchecked", "rawtypes" })
-        FilterContext<?> fc = new FilterContext.FilterContextBuilder().asyncHandler(future.getAsyncHandler())
-                .request(future.getCurrentRequest()).ioException(e).build();
+        FilterContext<?> fc = new FilterContext.FilterContextBuilder().asyncHandler(future.getAsyncHandler()).request(future.getCurrentRequest()).ioException(e).build();
         for (IOExceptionFilter asyncFilter : config.getIoExceptionFilters()) {
             try {
                 fc = asyncFilter.filter(fc);
@@ -541,7 +527,6 @@ public final class NettyRequestSender {
         }
 
         if (fc.replayRequest() && future.incrementRetryAndCheck() && future.isReplayPossible()) {
-            future.setKeepAlive(false);
             replayRequest(future, fc, channel);
             replayed = true;
         }
@@ -557,11 +542,9 @@ public final class NettyRequestSender {
         boolean isWs = uri.isWebSocket();
         if (asyncHandler instanceof WebSocketUpgradeHandler) {
             if (!isWs) {
-                throw new IllegalArgumentException(
-                        "WebSocketUpgradeHandler but scheme isn't ws or wss: " + uri.getScheme());
+                throw new IllegalArgumentException("WebSocketUpgradeHandler but scheme isn't ws or wss: " + uri.getScheme());
             } else if (!request.getMethod().equals(GET) && !request.getMethod().equals(CONNECT)) {
-                throw new IllegalArgumentException(
-                        "WebSocketUpgradeHandler but method isn't GET or CONNECT: " + request.getMethod());
+                throw new IllegalArgumentException("WebSocketUpgradeHandler but method isn't GET or CONNECT: " + request.getMethod());
             }
         } else if (isWs) {
             throw new IllegalArgumentException("No WebSocketUpgradeHandler but scheme is " + uri.getScheme());
@@ -569,10 +552,14 @@ public final class NettyRequestSender {
     }
 
     private Channel pollPooledChannel(Request request, ProxyServer proxy, AsyncHandler<?> asyncHandler) {
-        try {
-            asyncHandler.onConnectionPoolAttempt();
-        } catch (Exception e) {
-            LOGGER.error("onConnectionPoolAttempt crashed", e);
+
+        final AsyncHandlerExtensions asyncHandlerExtensions = toAsyncHandlerExtensions(asyncHandler);
+        if (asyncHandlerExtensions != null) {
+            try {
+                asyncHandlerExtensions.onConnectionPoolAttempt();
+            } catch (Exception e) {
+                LOGGER.error("onConnectionPoolAttempt crashed", e);
+            }
         }
 
         Uri uri = request.getUri();
@@ -594,12 +581,15 @@ public final class NettyRequestSender {
         future.touch();
 
         LOGGER.debug("\n\nReplaying Request {}\n for Future {}\n", newRequest, future);
-        try {
-            future.getAsyncHandler().onRetry();
-        } catch (Exception e) {
-            LOGGER.error("onRetry crashed", e);
-            abort(channel, future, e);
-            return;
+        final AsyncHandlerExtensions asyncHandlerExtensions = toAsyncHandlerExtensions(future.getAsyncHandler());
+        if (asyncHandlerExtensions != null) {
+            try {
+                asyncHandlerExtensions.onRetry();
+            } catch (Exception e) {
+                LOGGER.error("onRetry crashed", e);
+                abort(channel, future, e);
+                return;
+            }
         }
 
         channelManager.drainChannelAndOffer(channel, future);
@@ -610,8 +600,7 @@ public final class NettyRequestSender {
         return clientState.isClosed();
     }
 
-    public void drainChannelAndExecuteNextRequest(final Channel channel, final NettyResponseFuture<?> future,
-            Request nextRequest) {
+    public void drainChannelAndExecuteNextRequest(final Channel channel, final NettyResponseFuture<?> future, Request nextRequest) {
         Channels.setAttribute(channel, new OnLastHttpContentCallback(future) {
             @Override
             public void call() {

@@ -15,6 +15,11 @@ package org.asynchttpclient.netty.channel;
 
 import static org.asynchttpclient.util.Assertions.assertNotNull;
 import static org.asynchttpclient.util.DateUtils.unpreciseMillisTime;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelId;
+import io.netty.util.Timeout;
+import io.netty.util.Timer;
+import io.netty.util.TimerTask;
 
 import java.net.InetSocketAddress;
 import java.util.*;
@@ -22,7 +27,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -31,12 +35,6 @@ import org.asynchttpclient.AsyncHttpClientConfig;
 import org.asynchttpclient.channel.ChannelPool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelId;
-import io.netty.util.Timeout;
-import io.netty.util.Timer;
-import io.netty.util.TimerTask;
 
 /**
  * A simple implementation of {@link ChannelPool} based on a {@link java.util.concurrent.ConcurrentHashMap}
@@ -108,13 +106,9 @@ public final class DefaultChannelPool implements ChannelPool {
     }
 
     private static final class IdleChannel {
-        
-        private static final AtomicIntegerFieldUpdater<IdleChannel> ownedField = AtomicIntegerFieldUpdater.newUpdater(IdleChannel.class, "owned");
-        
         final Channel channel;
         final long start;
-        @SuppressWarnings("unused")
-        private volatile int owned = 0;
+        final AtomicBoolean owned = new AtomicBoolean(false);
 
         IdleChannel(Channel channel, long start) {
             this.channel = assertNotNull(channel, "channel");
@@ -122,7 +116,7 @@ public final class DefaultChannelPool implements ChannelPool {
         }
 
         public boolean takeOwnership() {
-            return ownedField.getAndSet(this, 1) == 0;
+            return owned.compareAndSet(false, true);
         }
 
         public Channel getChannel() {
@@ -149,6 +143,10 @@ public final class DefaultChannelPool implements ChannelPool {
         return creation != null && now - creation.creationTime >= connectionTtl;
     }
 
+    private boolean isRemotelyClosed(Channel channel) {
+        return !channel.isActive();
+    }
+
     private final class IdleChannelDetector implements TimerTask {
 
         private boolean isIdleTimeoutExpired(IdleChannel idleChannel, long now) {
@@ -160,7 +158,7 @@ public final class DefaultChannelPool implements ChannelPool {
             List<IdleChannel> idleTimeoutChannels = null;
             for (IdleChannel idleChannel : partition) {
                 boolean isIdleTimeoutExpired = isIdleTimeoutExpired(idleChannel, now);
-                boolean isRemotelyClosed = !Channels.isChannelActive(idleChannel.channel);
+                boolean isRemotelyClosed = isRemotelyClosed(idleChannel.channel);
                 boolean isTtlExpired = isTtlExpired(idleChannel.channel, now);
                 if (isIdleTimeoutExpired || isRemotelyClosed || isTtlExpired) {
                     LOGGER.debug("Adding Candidate expired Channel {} isIdleTimeoutExpired={} isRemotelyClosed={} isTtlExpired={}", idleChannel.channel, isIdleTimeoutExpired, isRemotelyClosed, isTtlExpired);
@@ -297,9 +295,9 @@ public final class DefaultChannelPool implements ChannelPool {
                 if (idleChannel == null)
                     // pool is empty
                     break;
-                else if (!Channels.isChannelActive(idleChannel.channel)) {
+                else if (isRemotelyClosed(idleChannel.channel)) {
                     idleChannel = null;
-                    LOGGER.trace("Channel is inactive, probably remotely closed!");
+                    LOGGER.trace("Channel not connected or not opened, probably remotely closed!");
                 } else if (!idleChannel.takeOwnership()) {
                     idleChannel = null;
                     LOGGER.trace("Couldn't take ownership of channel, probably in the process of being expired!");
@@ -314,7 +312,7 @@ public final class DefaultChannelPool implements ChannelPool {
      */
     public boolean removeAll(Channel channel) {
         ChannelCreation creation = connectionTtlEnabled ? channelId2Creation.remove(channel.id()) : null;
-        return !isClosed.get() && creation != null && partitions.get(creation.partitionKey).remove(new IdleChannel(channel, Long.MIN_VALUE));
+        return !isClosed.get() && creation != null && partitions.get(creation.partitionKey).remove(channel);
     }
 
     /**
