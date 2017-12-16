@@ -45,7 +45,7 @@ public final class HttpHandler extends AsyncHttpClientHandler {
 
     private boolean abortAfterHandlingStatus(//
             AsyncHandler<?> handler,//
-            NettyResponseStatus status) throws Exception {
+            NettyResponseStatus status) throws IOException, Exception {
         return handler.onStatusReceived(status) == State.ABORT;
     }
 
@@ -87,7 +87,7 @@ public final class HttpHandler extends AsyncHttpClientHandler {
                     abortAfterHandlingReactiveStreams(channel, future, handler);
 
             if (abort) {
-                finishUpdate(future, channel, true);
+                finishUpdate(future, channel, false, true);
             }
         }
     }
@@ -116,8 +116,8 @@ public final class HttpHandler extends AsyncHttpClientHandler {
         }
 
         if (abort || last) {
-            boolean close = abort || !future.isKeepAlive();
-            finishUpdate(future, channel, close);
+            boolean keepAlive = !abort && future.isKeepAlive();
+            finishUpdate(future, channel, keepAlive, !last);
         }
     }
 
@@ -168,7 +168,7 @@ public final class HttpHandler extends AsyncHttpClientHandler {
         } catch (Exception abortException) {
             logger.debug("Abort failed", abortException);
         } finally {
-            finishUpdate(future, channel, true);
+            finishUpdate(future, channel, false, false);
         }
     }
 

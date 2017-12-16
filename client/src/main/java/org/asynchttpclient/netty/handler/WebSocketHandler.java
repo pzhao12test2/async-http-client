@@ -87,7 +87,7 @@ public final class WebSocketHandler extends AsyncHttpClientHandler {
         try {
             handler.onThrowable(new IOException("Invalid Status code=" + status.getStatusCode() + " text=" + status.getStatusText()));
         } finally {
-            finishUpdate(future, channel, true);
+            finishUpdate(future, channel, false, false);
         }
     }
 
