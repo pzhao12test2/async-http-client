@@ -29,10 +29,6 @@ import org.asynchttpclient.exception.TooManyConnectionsPerHostException;
  */
 public class ConnectionSemaphore {
 
-    public static ConnectionSemaphore newConnectionSemaphore(AsyncHttpClientConfig config) {
-        return config.getMaxConnections() > 0 || config.getMaxConnectionsPerHost() > 0 ? new ConnectionSemaphore(config) : null;
-    }
-
     private final int maxTotalConnections;
     private final NonBlockingSemaphoreLike freeChannels;
     private final int maxConnectionsPerHost;
@@ -41,7 +37,7 @@ public class ConnectionSemaphore {
     private final IOException tooManyConnections;
     private final IOException tooManyConnectionsPerHost;
 
-    private ConnectionSemaphore(AsyncHttpClientConfig config) {
+    public ConnectionSemaphore(AsyncHttpClientConfig config) {
         tooManyConnections = unknownStackTrace(new TooManyConnectionsException(config.getMaxConnections()), ConnectionSemaphore.class, "acquireChannelLock");
         tooManyConnectionsPerHost = unknownStackTrace(new TooManyConnectionsPerHostException(config.getMaxConnectionsPerHost()), ConnectionSemaphore.class, "acquireChannelLock");
         maxTotalConnections = config.getMaxConnections();
