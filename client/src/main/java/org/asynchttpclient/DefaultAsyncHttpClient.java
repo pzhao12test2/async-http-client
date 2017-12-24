@@ -17,6 +17,9 @@
 package org.asynchttpclient;
 
 import static org.asynchttpclient.util.Assertions.assertNotNull;
+import io.netty.channel.EventLoopGroup;
+import io.netty.util.HashedWheelTimer;
+import io.netty.util.Timer;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
@@ -27,13 +30,10 @@ import org.asynchttpclient.filter.FilterException;
 import org.asynchttpclient.filter.RequestFilter;
 import org.asynchttpclient.handler.resumable.ResumableAsyncHandler;
 import org.asynchttpclient.netty.channel.ChannelManager;
+import org.asynchttpclient.netty.channel.ConnectionSemaphore;
 import org.asynchttpclient.netty.request.NettyRequestSender;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import io.netty.channel.EventLoopGroup;
-import io.netty.util.HashedWheelTimer;
-import io.netty.util.Timer;
 
 /**
  * Default and threadsafe implementation of {@link AsyncHttpClient}.
@@ -44,6 +44,7 @@ public class DefaultAsyncHttpClient implements AsyncHttpClient {
     private final AsyncHttpClientConfig config;
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final ChannelManager channelManager;
+    private final ConnectionSemaphore connectionSemaphore;
     private final NettyRequestSender requestSender;
     private final boolean allowStopNettyTimer;
     private final Timer nettyTimer;
@@ -51,6 +52,8 @@ public class DefaultAsyncHttpClient implements AsyncHttpClient {
     /**
      * Default signature calculator to use for all requests constructed by this
      * client instance.
+     *
+     * @since 1.1
      */
     protected SignatureCalculator signatureCalculator;
 
@@ -83,7 +86,8 @@ public class DefaultAsyncHttpClient implements AsyncHttpClient {
         nettyTimer = allowStopNettyTimer ? newNettyTimer() : config.getNettyTimer();
 
         channelManager = new ChannelManager(config, nettyTimer);
-        requestSender = new NettyRequestSender(config, channelManager, nettyTimer, new AsyncHttpClientState(closed));
+        connectionSemaphore = new ConnectionSemaphore(config);
+        requestSender = new NettyRequestSender(config, channelManager, connectionSemaphore, nettyTimer, new AsyncHttpClientState(closed));
         channelManager.configureBootstraps(requestSender);
     }
 

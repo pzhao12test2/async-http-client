@@ -84,11 +84,12 @@ public final class NettyRequestSender {
 
     public NettyRequestSender(AsyncHttpClientConfig config,//
             ChannelManager channelManager,//
+            ConnectionSemaphore connectionSemaphore,//
             Timer nettyTimer,//
             AsyncHttpClientState clientState) {
         this.config = config;
         this.channelManager = channelManager;
-        this.connectionSemaphore = ConnectionSemaphore.newConnectionSemaphore(config);
+        this.connectionSemaphore = connectionSemaphore;
         this.nettyTimer = nettyTimer;
         this.clientState = clientState;
         requestFactory = new NettyRequestFactory(config);
@@ -526,7 +527,6 @@ public final class NettyRequestSender {
         }
 
         if (fc.replayRequest() && future.incrementRetryAndCheck() && future.isReplayPossible()) {
-            future.setKeepAlive(false);
             replayRequest(future, fc, channel);
             replayed = true;
         }

@@ -13,19 +13,19 @@
  */
 package org.asynchttpclient.request.body.multipart;
 
-import static io.netty.handler.codec.http.HttpHeaderNames.*;
-import static io.netty.handler.codec.http.HttpHeaderValues.*;
+import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_LENGTH;
+import static io.netty.handler.codec.http.HttpHeaderValues.APPLICATION_OCTET_STREAM;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.asynchttpclient.Dsl.*;
 import static org.asynchttpclient.test.TestUtils.*;
-import static org.testng.Assert.*;
+import static org.testng.Assert.assertEquals;
 
 import java.io.File;
-import java.io.IOException;
-import java.util.concurrent.ExecutionException;
-import java.util.function.Function;
 
-import org.asynchttpclient.*;
+import org.asynchttpclient.AbstractBasicTest;
+import org.asynchttpclient.AsyncHttpClient;
+import org.asynchttpclient.BasicAuthTest;
+import org.asynchttpclient.Response;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.server.handler.AbstractHandler;
@@ -37,6 +37,7 @@ public class MultipartBasicAuthTest extends AbstractBasicTest {
     @BeforeClass(alwaysRun = true)
     @Override
     public void setUpGlobal() throws Exception {
+
         server = new Server();
         ServerConnector connector1 = addHttpConnector(server);
         addBasicAuthHandler(server, configureHandler());
@@ -50,56 +51,31 @@ public class MultipartBasicAuthTest extends AbstractBasicTest {
         return new BasicAuthTest.SimpleHandler();
     }
 
-    private void expectBrokenPipe(Function<BoundRequestBuilder, BoundRequestBuilder> f) throws Exception {
-        File file = createTempFile(1024 * 1024);
-
-        Throwable cause = null;
-        try (AsyncHttpClient client = asyncHttpClient()) {
-            try {
-                for (int i = 0; i < 20 && cause == null; i++) {
-                    f.apply(client.preparePut(getTargetUrl())//
-                            .addBodyPart(new FilePart("test", file, APPLICATION_OCTET_STREAM.toString(), UTF_8)))//
-                            .execute().get();
-                }
-            } catch (ExecutionException e) {
-                cause = e.getCause();
-            }
-        }
-
-        assertTrue(cause instanceof IOException, "Expected an IOException");
-    }
-
-    @Test(groups = "standalone")
-    public void noRealmCausesServerToCloseSocket() throws Exception {
-        expectBrokenPipe(rb -> rb);
-    }
-
-    @Test(groups = "standalone")
-    public void unauthorizedNonPreemptiveRealmCausesServerToCloseSocket() throws Exception {
-        expectBrokenPipe(rb -> rb.setRealm(basicAuthRealm(USER, ADMIN)));
-    }
-
-    private void expectSuccess(Function<BoundRequestBuilder, BoundRequestBuilder> f) throws Exception {
+    @Test(groups = "standalone", enabled = false)
+    public void testNoRealm() throws Exception {
         File file = createTempFile(1024 * 1024);
 
         try (AsyncHttpClient client = asyncHttpClient()) {
             for (int i = 0; i < 20; i++) {
-                Response response = f.apply(client.preparePut(getTargetUrl())//
-                        .addBodyPart(new FilePart("test", file, APPLICATION_OCTET_STREAM.toString(), UTF_8)))//
-                        .execute().get();
-                assertEquals(response.getStatusCode(), 200);
-                assertEquals(response.getResponseBodyAsBytes().length, Integer.valueOf(response.getHeader("X-" + CONTENT_LENGTH)).intValue());
+                Response response = client.preparePut(getTargetUrl())//
+                        .addBodyPart(new FilePart("test", file, APPLICATION_OCTET_STREAM.toString(), UTF_8)).execute().get();
+                assertEquals(response.getStatusCode(), 401);
             }
         }
     }
 
-    @Test(groups = "standalone")
-    public void authorizedPreemptiveRealmWorks() throws Exception {
-        expectSuccess(rb -> rb.setRealm(basicAuthRealm(USER, ADMIN).setUsePreemptiveAuth(true)));
-    }
+    @Test(groups = "standalone", enabled = false)
+    public void testAuthorizedRealm() throws Exception {
+        File file = createTempFile(1024 * 1024);
 
-    @Test(groups = "standalone")
-    public void authorizedNonPreemptiveRealmWorksWithExpectContinue() throws Exception {
-        expectSuccess(rb -> rb.setRealm(basicAuthRealm(USER, ADMIN)).setHeader(EXPECT, CONTINUE));
+        try (AsyncHttpClient client = asyncHttpClient()) {
+            for (int i = 0; i < 20; i++) {
+                Response response = client.preparePut(getTargetUrl())//
+                        .setRealm(basicAuthRealm(USER, ADMIN).build())//
+                        .addBodyPart(new FilePart("test", file, APPLICATION_OCTET_STREAM.toString(), UTF_8)).execute().get();
+                assertEquals(response.getStatusCode(), 200);
+                assertEquals(response.getResponseBodyAsBytes().length, Integer.valueOf(response.getHeader("X-" + CONTENT_LENGTH)).intValue());
+            }
+        }
     }
 }
